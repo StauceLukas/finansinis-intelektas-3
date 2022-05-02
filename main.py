@@ -1,80 +1,149 @@
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
+pd.options.mode.chained_assignment = None  # default='warn'
 
-data = pd.read_csv('data/TWTR.csv')
-data['Date'] = pd.to_datetime(data['Date'], format="%Y-%m-%d")
-data = data.set_index(data['Date'])
-data = data.drop(columns=['Date'])
+twitter = pd.read_csv('data/TWTR.csv').set_index('Date')
+twitter.index = pd.to_datetime(twitter.index)
+twitter.tail()
+
+def SMA(data, window):
+    sma = data.rolling(window = window).mean()
+    return sma
 
 
-# Strategija
-p1 = 20
-p2 = 70
+twitter['SMA_50'] = SMA(twitter['Close'], 50)
+twitter['SMA_50'] = twitter['SMA_50'].fillna(0)
+twitter.tail()
 
-data_close = data['Close'].to_frame()
-data_close['SMA20'] = data_close['Close'].rolling(20).mean()
-data_close['SMA70'] = data_close['Close'].rolling(70).mean()
 
+def Bollinger_Bands(data, sma, window):
+    std = data.rolling(window = window).std()
+    upper_bb = sma + std * 2
+    lower_bb = sma - std * 2
+    return upper_bb, lower_bb
+
+
+twitter['Upper_BB'], twitter['Lower_BB'] = Bollinger_Bands(twitter['Close'], twitter['SMA_50'], 50)
+twitter['Upper_BB'] = twitter['Upper_BB'].fillna(0)
+twitter['Lower_BB'] = twitter['Lower_BB'].fillna(0)
+twitter.tail()
+
+# Plotting
 fig, ax = plt.subplots(2, 1, sharex=True, sharey=False)
-ax[0].plot(data_close[['Close', 'SMA20', 'SMA70']])
 
-np_sma20 = data_close['SMA20'].to_numpy()
-np_sma70 = data_close['SMA70'].to_numpy()
+ax[0].plot(twitter[['Close', 'SMA_50', 'Upper_BB', 'Lower_BB']])
+ax[0].legend(['Close', 'SMA_50', 'Upper_BB', 'Lower_BB'])
 
-idx = (np_sma20[1:] > np_sma70[1:]) != (np_sma20[:-1] > np_sma70[:-1])
-idx = np.insert(idx, 0, False)
+twitter['Future_Position'] = 0
+twitter['Position_Changed'] = False
+have_invested = 0
 
-ax[0].scatter(data.index[idx], data_close['SMA20'][idx], marker='x', color='black')
-ax[0].legend(['Close kaina', 'SMA20', 'SMA70'])
+for i in range(len(twitter)):
+    if have_invested == 0:
+        # Jeigu neturim nusipirke
+        if twitter.iloc[i]['Close'] < twitter.iloc[i]['SMA_50'] and twitter.iloc[i]['Close'] > twitter.iloc[i]['Lower_BB']:
+            twitter.iloc[i, twitter.columns.get_loc('Future_Position')] = 1
+            have_invested = 1
+            ax[0].scatter(twitter.index[i], twitter['SMA_50'][i], marker='^', color='green')
+        else:
+            twitter.iloc[i]['Future_Position'] = 0
+    else:
+        if twitter.iloc[i]['Close'] > twitter.iloc[i]['Upper_BB']:
+            twitter.iloc[i, twitter.columns.get_loc('Position_Changed')] = True
+            twitter.iloc[i, twitter.columns.get_loc('Future_Position')] = 0
+            have_invested = 0
+            ax[0].scatter(twitter.index[i], twitter['Close'][i], marker='v', color='red')
+        elif twitter.iloc[i]['Close'] < twitter.iloc[i]['Lower_BB']:
+            twitter.iloc[i, twitter.columns.get_loc('Position_Changed')] = True
+            twitter.iloc[i, twitter.columns.get_loc('Future_Position')] = 0
+            have_invested = 0
+            ax[0].scatter(twitter.index[i], twitter['Close'][i], marker='v', color='red')
+        else:
+            twitter.iloc[i, twitter.columns.get_loc('Future_Position')] = 1
 
-data['SMA20'] = data['Close'].rolling(20).mean()
-data['SMA70'] = data['Close'].rolling(70).mean()
+taxes = -0.05
+twitter['Taxes'] = twitter['Position_Changed'] * taxes * 1
 
-data['SMA20'] = data['SMA20'].fillna(0)
-data['SMA70'] = data['SMA70'].fillna(0)
+twitter['Price_Diff'] = twitter['Close'].diff(1)
+twitter.iloc[0, twitter.columns.get_loc('Price_Diff')] = 0
 
-# Pozicijos
+twitter['Profit_from_Position'] = twitter['Price_Diff'] * twitter['Future_Position']
+twitter['Gross_Profit'] = twitter['Profit_from_Position'] + twitter['Taxes']
 
+gross_profit = np.cumsum(twitter['Gross_Profit'])
 
-data['Future_Position'] = 0
-data.loc[data['SMA20'] > data['SMA70'], 'Future_Position'] = 1
-data.loc[data['SMA20'] < data['SMA70'], 'Future_Position'] = -1
-data.loc[0:np.max([p1, p2]) - 1, 'Future_Position'] = 0
+ax[1].plot(gross_profit, label='Non-optimized profit')
 
-data['Position'] = data['Future_Position'].shift(1)
-data.iloc[0, data.columns.get_loc('Position')] = 0
+twitter1 = twitter[['Close']].copy()
 
-basis = data['Close'][0]
-take_profit = basis * 1.15
-stop_loss = basis * 0.6
+def strategy(data, window, taxes):
+    data['SMA_50'] = SMA(data['Close'], window)
+    data['SMA_50'] = data['SMA_50'].fillna(0)
+    data.tail()
 
-""" 
-for i in range(0, len(data)):
-    if (data.iloc[i]['Close'] > take_profit):
-        take_profit = basis * 1.15
-        stop_loss = basis * 1.15
-        ax[0].scatter(data.index[i], data_close['SMA20'][i], marker='o', color='yellow')
-        basis = basis * 1.15
-        print('Take profit')
-    if (data.iloc[i]['Close'] < stop_loss):
-        stop_loss = basis * 0.6
-        take_profit = basis * 0.6
-        ax[0].scatter(data.index[i], data_close['SMA20'][i], marker='o', color='blue')
-        basis = basis * 1.15
-        print('Stop loss')
+    data['Upper_BB'], data['Lower_BB'] = Bollinger_Bands(data['Close'], data['SMA_50'], window)
+    data['Upper_BB'] = data['Upper_BB'].fillna(0)
+    data['Lower_BB'] = data['Lower_BB'].fillna(0)
+    data.tail()
 
-"""
-data['Position_Change'] = data['Future_Position'] != data['Position']
+    data['Future_Position'] = 0
+    data['Position_Changed'] = False
+    have_invested = 0
 
-taxes = 0.15
-data['Taxes'] = data['Position_Change'] * taxes * 2
+    for i in range(len(data)):
+        if have_invested == 0:
+        # Jeigu neturim nusipirke
+            if data.iloc[i]['Close'] < data.iloc[i]['SMA_50'] and data.iloc[i]['Close'] > data.iloc[i]['Lower_BB']:
+                data.iloc[i, data.columns.get_loc('Future_Position')] = 1
+                have_invested = 1
+            else:
+                data.iloc[i]['Future_Position'] = 0
+        else:
+            if data.iloc[i]['Close'] > data.iloc[i]['Upper_BB']:
+                data.iloc[i, data.columns.get_loc('Position_Changed')] = True
+                data.iloc[i, data.columns.get_loc('Future_Position')] = 0
+                have_invested = 0
 
-data['Price_Diff'] = data['Close'].diff(1)
-data.iloc[0, data.columns.get_loc('Price_Diff')] = 0
+            elif data.iloc[i]['Close'] < data.iloc[i]['Lower_BB']:
+                data.iloc[i, data.columns.get_loc('Position_Changed')] = True
+                data.iloc[i, data.columns.get_loc('Future_Position')] = 0
+                have_invested = 0
+            else:
+                data.iloc[i, data.columns.get_loc('Future_Position')] = 1
 
-data['Profit_from_Position'] = data['Price_Diff'] * data['Position']
-data['Gross_Profit'] = data['Profit_from_Position'] + data['Taxes']
+    data['Taxes'] = data['Position_Changed'] * taxes * 1
 
-gross_profit = np.cumsum(data['Gross_Profit'])
+    data['Price_Diff'] = data['Close'].diff(1)
+    data.iloc[0, data.columns.get_loc('Price_Diff')] = 0
+
+    data['Profit_from_Position'] = data['Price_Diff'] * data['Future_Position']
+    data['Gross_Profit'] = data['Profit_from_Position'] + data['Taxes']
+
+    return data['Gross_Profit']
+
+def Sharpe_Ratio(returns, N=252):
+    print(np.sqrt(N) * returns.mean() / (returns.std() + 0.01))
+    return np.sqrt(N) * returns.mean() / (returns.std() + 0.01)
+
+df_optim = pd.DataFrame()
+df_optim['p1'] = 0
+df_optim['Sharpe_Ratio'] = 0
+df_optim['rez'] = 0
+
+p1 = 50
+
+for p1 in range(1, 100):
+    rez = strategy(twitter1, p1, taxes)
+    sharpe_ratio = Sharpe_Ratio(rez)
+    df_optim = df_optim.append({'p1': p1,'Sharpe_Ratio': sharpe_ratio, 'rez': rez.copy()}, ignore_index=True)
+
+df_optim['Sharpe_Ratio'] = df_optim['Sharpe_Ratio'].astype(float)
+
+idx_max = df_optim['Sharpe_Ratio'].idxmax()
+
+p23_strategija = strategy(twitter,  23, taxes)
+
+gross_profit = np.cumsum(p23_strategija)
 ax[1].plot(gross_profit)
+ax[1].legend(['Non-optimized', 'optimized'])
